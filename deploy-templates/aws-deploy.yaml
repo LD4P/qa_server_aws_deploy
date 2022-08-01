@@ -2,11 +2,11 @@ AWSTemplateFormatVersion: "2010-09-09"
 Description: >
   1. Make a copy of deploy-parameters.env.example and rename it to deploy-parameters.env, then populate it with the values appropriate to your environment. CloudFormation will read those values from the file if you pass it on the command line when you create or update the stack. See the parameter definitions below for full instructions.
   2. Navigate to the directory that contains these files and run the following aws cli command:
-  aws cloudformation create-stack --stack-name qa-server \
+  aws cloudformation create-stack --stack-name lookup-int-deploy \
       --profile qa-user \
       --template-body file://./aws-deploy.yaml \
-      --parameters file://./deploy-parameters.env \
-      --role-arn arn:aws:iam::<your_account_id>:role/qa-role \
+      --parameters file://./deploy-int.env \
+      --role-arn arn:aws:iam::092831676293:role/qa-service-cloudformation-role \
       --capabilities CAPABILITY_NAMED_IAM
   3. You will need to validate the ACM certificate after the stack has been created, by creating the DNS record that will appear in the CloudFormation and ACM consoles.
   
@@ -42,6 +42,10 @@ Parameters:
     Type: String
     Default: ''
     Description: EFS Access Point ID of the volume where the authority files are stored. This will map to the application's authority file volume, and it should contain at least one authority file. If no authority files are found, the application will still launch, and static portions will display, but the Authorities, Check Status, and Monitor Status pages may behave unpredictably.
+  LocalesAccessPointId:
+    Type: String
+    Default: ''
+    Description: EFS Access Point ID of the volume where the locale files are stored. This will map to the application's locales file volume, and it should contain at least one locale file. If no locale files are found, the application will still launch, and static portions will display, but the appearance may be unpredictable.
   DatabaseAccessPointId:
     Type: String
     Default: ''
@@ -54,6 +58,26 @@ Parameters:
     Description: EC2 instance type for the cluster. This is recommended to be a type with at least 2 CPUs and 8 GiB of RAM, but you can change it here if you need to.
     Type: String
     Default: m5.large
+  KeyPair:
+    Description: The name of an existing EC2 key pair that can be used to SSH to your cluster instances for debugging or troubleshooting. This is entirely optional and your service will function without it. Without a key pair you will not be able to log in to your cluster's EC2 instances via SSH. This key pair must already exist in your account, and you should have a copy of the public key downloaded to your local host.
+    Type: String
+    Default: ''
+  TagCostCenter:
+    Type: String
+    Default: L858313
+    Description: This tag and the ones that follow are provided as an example and may not be appropriate to your environment. Feel free to alter or remove them as necessary.
+  TagEnvironment:
+    Type: String
+    Default: Development
+  TagApplication:
+    Type: String
+    Default: LD4P
+  TagPanopta:
+    Type: String
+    Default: Dev
+  TagTechnicalContact:
+    Type: String
+    Default: gad22
 Mappings:
   AWSRegionToAMI:
     Description: This list of ECS-optimized AMIs will change over time and will need to be maintained. You can get the most recent AMI for your current region with the command `aws ssm get-parameters --names /aws/service/ecs/optimized-ami/amazon-linux-2/recommended`. If your region is known and does not change, the others can be ignored or removed safely.
@@ -100,6 +124,8 @@ Resources:
           MountPoints: 
             - SourceVolume: qa-server-authorities
               ContainerPath: /app/ld4p/qa_server-webapp/config/authorities
+            - SourceVolume: qa-server-locales
+              ContainerPath: /app/ld4p/qa_server-webapp/config/locales
           PortMappings: 
             - HostPort: 3000
               Protocol: tcp
@@ -110,7 +136,7 @@ Resources:
             - Type: s3
               Value: !Join ["", ["arn:aws:s3:::", !Ref S3BucketName, "/", !Ref EnvFileName]]
           Essential: True
-          Image: mariadb:latest
+          Image: mariadb:10.7.4
           LogConfiguration: 
             LogDriver: awslogs
             Options:
@@ -120,7 +146,7 @@ Resources:
           MemoryReservation: 512
           MountPoints: 
             - SourceVolume: db-mysql-data
-              ContainerPath: /var/lib/mysql/data
+              ContainerPath: /var/lib/mysql
           PortMappings: 
             - HostPort: 3306
               Protocol: tcp
@@ -140,6 +166,13 @@ Resources:
               AccessPointId: !Ref AuthorityAccessPointId
             RootDirectory: "/"
             TransitEncryption: ENABLED
+        - Name: qa-server-locales
+          EFSVolumeConfiguration:
+            FilesystemId: !Ref VolumeId
+            AuthorizationConfig: 
+              AccessPointId: !Ref LocalesAccessPointId
+            RootDirectory: "/"
+            TransitEncryption: ENABLED
         - Name: db-mysql-data
           EFSVolumeConfiguration:
             FilesystemId: !Ref VolumeId
@@ -147,6 +180,11 @@ Resources:
               AccessPointId: !Ref DatabaseAccessPointId
             RootDirectory: "/"
             TransitEncryption: ENABLED
+      Tags:
+        - Key: "Cost Center"
+          Value: !Ref TagCostCenter
+        - Key: "Application"
+          Value: !Ref TagApplication
   CloudwatchLogGroup:
     Type: AWS::Logs::LogGroup
     Properties: 
@@ -156,6 +194,15 @@ Resources:
     Type: AWS::ECS::Cluster
     Properties: 
       ClusterName: !Join ["", [!Ref AWS::StackName, "-cluster"]]
+      Tags:
+        - Key: "Cost Center"
+          Value: !Ref TagCostCenter
+        - Key: "Application"
+          Value: !Ref TagApplication
+        - Key: "Environment"
+          Value: !Ref TagEnvironment
+        - Key: "Technical Contact"
+          Value: !Ref TagTechnicalContact
   Service:
     Type: AWS::ECS::Service
     DependsOn: 
@@ -165,8 +212,8 @@ Resources:
       Cluster: !Join ["", [!Ref AWS::StackName, "-cluster"]]
       DeploymentConfiguration: 
         MaximumPercent: 200
-        MinimumHealthyPercent: 100
-      DesiredCount: 2
+        MinimumHealthyPercent: 0
+      DesiredCount: 1
       EnableECSManagedTags: true
       HealthCheckGracePeriodSeconds: 0
       LaunchType: "EC2"
@@ -202,6 +249,14 @@ Resources:
         - Key: Name
           Value:
             Ref: AWS::StackName
+        - Key: "Cost Center"
+          Value: !Ref TagCostCenter
+        - Key: "Application"
+          Value: !Ref TagApplication
+        - Key: "Environment"
+          Value: !Ref TagEnvironment
+        - Key: "Technical Contact"
+          Value: !Ref TagTechnicalContact
       Type: application
   SecurityGroupLB:
     Type: AWS::EC2::SecurityGroup
@@ -327,6 +382,25 @@ Resources:
       MinSize: '1'
       MaxSize: '2'
       DesiredCapacity: '2'
+      Tags:
+        - Key: "Name"
+          Value: !Ref AWS::StackName
+          PropagateAtLaunch: true
+        - Key: "Cost Center"
+          Value: !Ref TagCostCenter
+          PropagateAtLaunch: true
+        - Key: "Application"
+          Value: !Ref TagApplication
+          PropagateAtLaunch: true
+        - Key: "Environment"
+          Value: !Ref TagEnvironment
+          PropagateAtLaunch: true
+        - Key: "Panopta"
+          Value: !Ref TagPanopta
+          PropagateAtLaunch: true
+        - Key: "Technical Contact"
+          Value: !Ref TagTechnicalContact
+          PropagateAtLaunch: true
     CreationPolicy:
       ResourceSignal:
         Timeout: PT15M
@@ -340,6 +414,7 @@ Resources:
       SecurityGroups: [!Ref 'SecurityGroupCI', !Ref 'SecurityGroupLB']
       InstanceType: !Ref 'InstanceType'
       IamInstanceProfile: !Ref 'EC2InstanceProfile'
+      KeyName: !Ref 'KeyPair'
       UserData:
         Fn::Base64: !Sub |
           #!/bin/bash -xe
@@ -367,8 +442,9 @@ Resources:
               'ecr:BatchCheckLayerAvailability', 'ecr:GetDownloadUrlForLayer',
               'ecr:BatchGetImage', 'logs:CreateLogStream', 'logs:PutLogEvents']
             Resource: '*'
-#  If you would rather use the AWS managed policy than the above custom policy, use this:
 #      ManagedPolicyArns:
+#        - 'arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore'
+# The following managed policy is an alternative to the custom policy
 #        - 'arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role'
   AutoscalingRole:
     Type: AWS::IAM::Role
@@ -449,7 +525,7 @@ Outputs:
   Cluster:
     Value: !Ref 'EcsCluster'
   LoadBalancer:
-    Description: Your Load Balancer's URL. Create a DNS record for {!Ref DomainName} that points to this location.
+    Description: Your Load Balancer's URL. Create a DNS record for your app's domain that points to this location.
     Value: !Join ['', [!GetAtt [LoadBalancer, DNSName]]]
   TaskDefinition:
     Value: !Ref 'TaskDefinition'

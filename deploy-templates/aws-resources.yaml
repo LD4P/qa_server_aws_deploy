@@ -1,36 +1,50 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >
   1. Review the parameters below and ensure that they are appropriate to your environment. Then deploy with this aws cli command:
-    aws cloudformation create-stack --stack-name qa-server-resources \
+    aws cloudformation create-stack --stack-name lookup-int-resources \
         --profile qa-user \
         --template-body file://./aws-resources.yaml \
-        --parameters file://./resources-parameters.env \
-        --role-arn arn:aws:iam::<your_account_id>:role/qa-role \
+        --parameters file://./resources-int.env \
+        --role-arn arn:aws:iam::092831676293:role/qa-service-cloudformation-role \
         --capabilities CAPABILITY_IAM
   2. The outputs of this template file will be used by the aws-cloudformation.yaml template.
 Parameters:
   AWSVpcId:
     Type: String
     Default: ''
-    Description: Your AWS VPC ID. It should look like vpc-4d4bec2b. Required for load balancer configuration and security group rules.
+    Description: Your AWS VPC ID. This template will not create a VPC for you, please enter the ID of a VPC that already exists. It should look like vpc-4d4bec2b. Required for load balancer configuration and security group rules.
   SubnetIds:
     Type: List<AWS::EC2::Subnet::Id>
-    Description: Select two subnets in your selected VPC. The values must be separated by commas.
+    Description: Select two subnets in your selected VPC. This template will not create subnets for you, please enter the IDs of two subnets that already exist. The values must be separated by commas, and the two subnets must be in different AZs.
   S3BucketName:
     Type: String
     Default: ''
-    Description: The name you wish your S3 bucket to have. This bucket name must be unique within the entire AWS region, so you will have to change the value provided here to one that is not already in use.
+    Description: The name you wish your S3 bucket to have. This template will create a new bucket with this name. The bucket name must be unique within the entire AWS region, so you will have to change the value provided here to one that is not already in use.
   EFSName:
     Type: String
-    Description: The name you wish your EFS filesystem to have. This name must be unique within your account.
+    Description: The name you wish your EFS filesystem to have. This template will create a new EFS filesystem with this name. This name must be unique within your account.
   EFSAuthoritiesAccessPoint:
     Type: String
     Default: ''
     Description: The name you wish your EFS authorities access point to have. This will create an access point where your service's authorities files will live. After it is created, you will need to connect to this access point to upload at least one authority file.
+  EFSLocalesAccessPoint:
+    Type: String
+    Default: ''
+    Description: The name you wish your EFS locales access point to have. This will create an access point where your service's locales files will live. After it is created, you will need to connect to this access point to upload at least one authority file.
   EFSDatabaseAccessPoint:
     Type: String
     Default: ''
-    Description: The name you wish your EFS database access point to have. This will create an access point that the database will use to store its datafiles.
+    Description: The name you wish your EFS database access point to have. This template will create an access point that the database will use to store its datafiles.
+  TagCostCenter:
+    Type: String
+    Default: L858313
+    Description: This tag and the ones that follow are provided as an example and may not be appropriate to your environment. Feel free to alter or remove them as necessary.
+  TagEnvironment:
+    Type: String
+    Default: Development
+  TagApplication:
+    Type: String
+    Default: LD4P
 Resources:
   Bucket:
     Type: AWS::S3::Bucket
@@ -41,12 +55,23 @@ Resources:
         BlockPublicPolicy: true
         IgnorePublicAcls: true
         RestrictPublicBuckets: true
+      Tags:
+        - Key: "Cost Center"
+          Value: !Ref TagCostCenter
+        - Key: "Application"
+          Value: !Ref TagApplication
   Filesystem:
     Type: AWS::EFS::FileSystem
     Properties: 
       FileSystemTags:
         - Key: "Name"
           Value: !Ref EFSName
+        - Key: "Cost Center"
+          Value: !Ref TagCostCenter
+        - Key: "Application"
+          Value: !Ref TagApplication
+        - Key: "Environment"
+          Value: !Ref TagEnvironment
   EFSMountTarget1:
     Type: AWS::EFS::MountTarget
     Properties: 
@@ -65,7 +90,7 @@ Resources:
     Type: AWS::EC2::SecurityGroup
     Properties: 
       GroupDescription: "Permit access over port 2049"
-      GroupName: !Ref EFSName
+      GroupName: !Join ["", [!Ref EFSName, "-NFS"]]
       SecurityGroupEgress: 
         - CidrIp: 0.0.0.0/0
           Description: Wide open to the world
@@ -85,39 +110,100 @@ Resources:
       AccessPointTags: 
         - Key: "Name"
           Value: !Ref EFSAuthoritiesAccessPoint
+        - Key: "Cost Center"
+          Value: !Ref TagCostCenter
+        - Key: "Application"
+          Value: !Ref TagApplication
+        - Key: "Environment"
+          Value: !Ref TagEnvironment
       FileSystemId: !Ref Filesystem
       PosixUser:
         Gid: 0
         Uid: 0
       RootDirectory: 
-        Path: "/authorities"
+        CreationInfo:
+          OwnerGid: 0
+          OwnerUid: 0
+          Permissions: 755
+        Path: "/config/authorities"
+  LocalesAccessPoint:
+    Type: AWS::EFS::AccessPoint
+    Properties: 
+      AccessPointTags: 
+        - Key: "Name"
+          Value: !Ref EFSLocalesAccessPoint
+        - Key: "Cost Center"
+          Value: !Ref TagCostCenter
+        - Key: "Application"
+          Value: !Ref TagApplication
+        - Key: "Environment"
+          Value: !Ref TagEnvironment
+      FileSystemId: !Ref Filesystem
+      PosixUser:
+        Gid: 0
+        Uid: 0
+      RootDirectory: 
+        CreationInfo:
+          OwnerGid: 0
+          OwnerUid: 0
+          Permissions: 755
+        Path: "/config/locales"
   DatabaseAccessPoint:
     Type: AWS::EFS::AccessPoint
     Properties: 
       AccessPointTags: 
         - Key: "Name"
           Value: !Ref EFSDatabaseAccessPoint
+        - Key: "Cost Center"
+          Value: !Ref TagCostCenter
+        - Key: "Application"
+          Value: !Ref TagApplication
+        - Key: "Environment"
+          Value: !Ref TagEnvironment
       FileSystemId: !Ref Filesystem
       PosixUser:
         Gid: 0
         Uid: 0
       RootDirectory: 
+        CreationInfo:
+          OwnerGid: 0
+          OwnerUid: 0
+          Permissions: 755
         Path: "/db-mysql-data"
-  EfsLocation:
+  EfsLocationAuthorities:
     Type: AWS::DataSync::LocationEFS
     Properties:
       EfsFilesystemArn: !Sub arn:${AWS::Partition}:elasticfilesystem:${AWS::Region}:${AWS::AccountId}:file-system/${Filesystem}
+      Subdirectory: "/config/authorities"
       Ec2Config:
         SecurityGroupArns:
           - !Sub arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:security-group/${NFSSecurityGroup}
         SubnetArn: !Sub arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:subnet/${EFSMountTarget2.SubnetId}
-  S3Location:
+  EfsLocationLocales:
+    Type: AWS::DataSync::LocationEFS
+    Properties:
+      EfsFilesystemArn: !Sub arn:${AWS::Partition}:elasticfilesystem:${AWS::Region}:${AWS::AccountId}:file-system/${Filesystem}
+      Subdirectory: "/config/locales"
+      Ec2Config:
+        SecurityGroupArns:
+          - !Sub arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:security-group/${NFSSecurityGroup}
+        SubnetArn: !Sub arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:subnet/${EFSMountTarget2.SubnetId}
+  S3LocationAuthorities:
     Type: AWS::DataSync::LocationS3
     Properties:
       S3BucketArn: !GetAtt Bucket.Arn
       S3Config:
         BucketAccessRoleArn: !GetAtt DataSyncRole.Arn
       S3StorageClass: STANDARD
+      Subdirectory: "/config/authorities"
+  S3LocationLocales:
+    Type: AWS::DataSync::LocationS3
+    Properties:
+      S3BucketArn: !GetAtt Bucket.Arn
+      S3Config:
+        BucketAccessRoleArn: !GetAtt DataSyncRole.Arn
+      S3StorageClass: STANDARD
+      Subdirectory: "/config/locales"
   DataSyncRole:
     Type: AWS::IAM::Role
     Properties:
@@ -137,18 +223,39 @@ Resources:
           - Effect: Allow
             Action: ['s3:AbortMultipartUpload', 's3:DeleteObject', 's3:GetObject', 's3:ListMultipartUploadParts', 's3:PutObjectTagging', 's3:GetObjectTagging', 's3:PutObject']
             Resource: !Sub arn:${AWS::Partition}:s3:::${S3BucketName}/*
-  S3ToEfsTask:
+  S3ToEfsTaskAuthorities:
     Type: AWS::DataSync::Task
     Properties:
       Name: 'Copy S3 to EFS'
-      SourceLocationArn: !Ref S3Location
-      DestinationLocationArn: !Ref EfsLocation
+      SourceLocationArn: !Ref S3LocationAuthorities
+      DestinationLocationArn: !Ref EfsLocationAuthorities
       Schedule:
         ScheduleExpression: cron(30 * * * ? *)
       Options:
         OverwriteMode: 'ALWAYS'
         PreserveDeletedFiles: 'REMOVE'
         TransferMode: 'CHANGED'
+  S3ToEfsTaskLocales:
+    Type: AWS::DataSync::Task
+    Properties:
+      Name: 'Copy S3 to EFS'
+      SourceLocationArn: !Ref S3LocationLocales
+      DestinationLocationArn: !Ref EfsLocationLocales
+      Schedule:
+        ScheduleExpression: cron(30 * * * ? *)
+      Options:
+        OverwriteMode: 'ALWAYS'
+        PreserveDeletedFiles: 'REMOVE'
+        TransferMode: 'CHANGED'
+      Tags:
+        - Key: "Name"
+          Value: !Ref EFSName
+        - Key: "Cost Center"
+          Value: !Ref TagCostCenter
+        - Key: "Application"
+          Value: !Ref TagApplication
+        - Key: "Environment"
+          Value: !Ref TagEnvironment
 
 Outputs:
   S3BucketName:
@@ -157,7 +264,9 @@ Outputs:
     Value: !Ref Filesystem
   AuthorityAccessPointId:
     Value: !Ref AuthorityAccessPoint
+  LocalesAccessPointId:
+    Value: !Ref LocalesAccessPoint
   DatabaseAccessPointId:
     Value: !Ref DatabaseAccessPoint
-  S3ToEfsTask:
-    Value: !Ref S3ToEfsTask
+  S3ToEfsTaskAuthorities:
+    Value: !Ref S3ToEfsTaskAuthorities
